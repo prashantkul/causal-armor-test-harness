@@ -1,0 +1,7 @@
+[causal_armor]
+margin_tau = 0.0
+privileged_tools = []
+enable_cot_masking = true
+mask_cot_for_scoring = true
+enable_sanitization = true
+log_attributions = true
