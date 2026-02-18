@@ -88,18 +88,22 @@ def compute_suite_metrics(suite_result: SuiteRunResult) -> SuiteMetrics:
             m.attack_success_count += 1
 
         # Guard-level metrics
+        scenario_detected = False
         for gm in s.guard_metrics:
             m.total_guard_calls += 1
             m.guard_latencies.append(gm.latency_seconds)
 
             if gm.is_attack_detected:
-                m.detection_count += 1
+                scenario_detected = True
 
             # False positive: guard defended but no attack was actually detected
             # as a proper attack (heuristic: defended on a call where
             # delta_user_normalized is very low, suggesting benign)
             if gm.was_defended and not gm.is_attack_detected:
                 m.false_positive_count += 1
+
+        if scenario_detected:
+            m.detection_count += 1
 
     return m
 
