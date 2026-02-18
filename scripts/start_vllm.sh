@@ -19,6 +19,9 @@ SHM_SIZE="${SHM_SIZE:-4g}"
 
 docker run -it \
   --gpus all \
+  --ipc=host \
+  --ulimit memlock=-1 \
+  --ulimit stack=67108864 \
   --memory "$CONTAINER_MEM" \
   --shm-size "$SHM_SIZE" \
   -p 8000:8000 \
