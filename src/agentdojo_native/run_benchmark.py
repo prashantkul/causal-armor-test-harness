@@ -256,6 +256,7 @@ def run_scenario(
     )
 
     t0 = time.monotonic()
+    guard_element = None
 
     try:
         # 1. Load environment with injections
@@ -341,9 +342,54 @@ def run_scenario(
             exc_info=True,
         )
         result.error = str(exc)
+        # Collect any guard metrics gathered before the crash.
+        if guard_element is not None:
+            result.guard_metrics = list(guard_element.metrics)
 
     result.total_seconds = time.monotonic() - t0
     return result
+
+
+_TRANSIENT_ERROR_CODES = ("429", "RESOURCE_EXHAUSTED", "503", "UNAVAILABLE")
+_MAX_RETRIES = 3
+_RETRY_BASE_DELAY = 10  # seconds
+
+
+def run_scenario_with_retry(
+    suite: TaskSuite,
+    user_task: BaseUserTask,
+    injection_task: BaseInjectionTask | None,
+    untrusted_tools: frozenset[str],
+    *,
+    attack: BaseAttack | None = None,
+    guard_enabled: bool = True,
+    agent_model: str = "gemini-2.0-flash",
+) -> ScenarioResult:
+    """Run a scenario with retry on transient API errors (429, 503)."""
+    for attempt in range(_MAX_RETRIES + 1):
+        result = run_scenario(
+            suite, user_task, injection_task, untrusted_tools,
+            attack=attack, guard_enabled=guard_enabled, agent_model=agent_model,
+        )
+        if result.error is None:
+            return result
+
+        is_transient = any(code in result.error for code in _TRANSIENT_ERROR_CODES)
+        if not is_transient or attempt >= _MAX_RETRIES:
+            return result
+
+        delay = _RETRY_BASE_DELAY * (2 ** attempt)
+        logger.warning(
+            "Transient error on %s/%s (attempt %d/%d), retrying in %ds: %s",
+            user_task.ID,
+            injection_task.ID if injection_task else "none",
+            attempt + 1, _MAX_RETRIES + 1,
+            delay,
+            result.error[:100],
+        )
+        time.sleep(delay)
+
+    return result  # Should not reach here, but satisfies type checker
 
 
 # ---------------------------------------------------------------------------
@@ -397,7 +443,7 @@ def run_suite(
                 it_id,
             )
 
-            scenario_result = run_scenario(
+            scenario_result = run_scenario_with_retry(
                 suite=suite,
                 user_task=ut,
                 injection_task=it,

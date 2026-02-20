@@ -202,16 +202,29 @@ class CausalArmorPipelineElement(BasePipelineElement):
                 content=last_msg["content"],
                 tool_calls=defended_tool_calls,
             )
+            # Only include blocked results alongside defended calls — the
+            # defended calls provide matching function_call parts so the
+            # function_response parts from blocked results stay valid.
             new_messages: list[ChatMessage] = [*messages[:-1], new_msg, *blocked_results]
         elif blocked_results:
-            # ALL calls were blocked — keep the assistant message but with
-            # empty tool_calls, and add the blocked results.
+            # ALL calls were blocked.  We must NOT append blocked tool-result
+            # messages because the assistant message will have tool_calls=[]
+            # (no function_call parts), and Gemini rejects orphaned
+            # function_response parts with 400 INVALID_ARGUMENT.
+            # Instead, provide a text-only assistant message so the LLM can
+            # try a different approach.
+            content = last_msg["content"] or [
+                text_content_block_from_string(
+                    "I attempted to use a tool but it was blocked by "
+                    "the security guard. Let me try a different approach."
+                )
+            ]
             new_msg = ChatAssistantMessage(
                 role="assistant",
-                content=last_msg["content"],
+                content=content,
                 tool_calls=[],
             )
-            new_messages = [*messages[:-1], new_msg, *blocked_results]
+            new_messages = [*messages[:-1], new_msg]
         else:
             new_messages = list(messages)
 
