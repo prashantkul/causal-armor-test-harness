@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import secrets
+import string
 from collections.abc import Sequence
 
 from agentdojo.functions_runtime import FunctionCall
@@ -69,5 +71,5 @@ def ca_toolcall_to_functioncall(tc: ToolCall) -> FunctionCall:
     return FunctionCall(
         function=tc.name,
         args=dict(tc.arguments),
-        id=f"call_{tc.name}",
+        id="call_" + "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(24)),
     )

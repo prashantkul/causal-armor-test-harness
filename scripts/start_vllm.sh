@@ -29,5 +29,5 @@ docker run -it \
   nvcr.io/nvidia/vllm:26.01-py3 \
   vllm serve google/gemma-3-12b-it \
     --dtype auto \
-    --max-model-len 8192 \
+    --max-model-len 32768 \
     --gpu-memory-utilization "$GPU_MEM_UTIL"

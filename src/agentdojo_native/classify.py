@@ -1,10 +1,14 @@
-"""Auto-classify untrusted tools via canary injection.
+"""Auto-classify tools for CausalArmor defense.
 
-Runs each user task's ground-truth pipeline with canary strings in
-injection placeholders.  Any tool whose output contains a canary is
-untrusted (its results flow through an injection vector).
+Two classifiers:
 
-This is fast (no LLM calls), deterministic, and auto-adapts to new
+1. **Untrusted tools** (canary injection): tools whose output may
+   contain attacker-injected content.
+2. **Attack tools** (ground-truth inspection): tools that injection
+   tasks use to carry out attacks — these become ``privileged_tools``
+   so only they are defended.
+
+Both are fast (no LLM calls), deterministic, and auto-adapt to new
 AgentDojo versions without manual maintenance.
 """
 
@@ -86,3 +90,44 @@ def classify_untrusted_tools(suite: TaskSuite) -> frozenset[str]:
         sorted(untrusted),
     )
     return frozenset(untrusted)
+
+
+def classify_attack_tools(suite: TaskSuite) -> frozenset[str]:
+    """Identify which tools injection tasks use to carry out attacks.
+
+    Inspects the ``ground_truth()`` of every injection task to collect
+    the tool names that attacks actually invoke.  These become
+    ``privileged_tools`` so CausalArmor only defends high-risk calls
+    and lets benign tools pass through unguarded.
+
+    Returns
+    -------
+    frozenset[str]
+        Tool names used by at least one injection task.
+    """
+    environment = suite.load_and_inject_default_environment(
+        suite.get_injection_vector_defaults()
+    )
+
+    attack_tools: set[str] = set()
+
+    for inj_task in suite.injection_tasks.values():
+        try:
+            gt_calls = inj_task.ground_truth(environment)
+        except Exception:
+            logger.warning(
+                "ground_truth() failed for %s — skipping",
+                inj_task.ID,
+            )
+            continue
+
+        for fc in gt_calls:
+            attack_tools.add(fc.function)
+
+    logger.info(
+        "Suite %s: %d attack tools (privileged): %s",
+        suite.name,
+        len(attack_tools),
+        sorted(attack_tools),
+    )
+    return frozenset(attack_tools)

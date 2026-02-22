@@ -1,8 +1,7 @@
-"""Convert AgentDojo Function schemas to Gemini function declarations.
+"""Convert AgentDojo Function schemas to provider-specific tool declarations.
 
 Reuses AgentDojo's own ``resolve_refs()`` and
-``remove_additional_properties_recursively()`` — these are the correct
-schema transforms for the Gemini API.
+``remove_additional_properties_recursively()`` for schema normalization.
 """
 
 from __future__ import annotations
@@ -49,3 +48,74 @@ def functions_to_gemini_declarations(
         declarations.append(declaration)
 
     return [{"function_declarations": declarations}]
+
+
+def functions_to_openai_tools(
+    functions: list[Function],
+) -> list[dict[str, Any]]:
+    """Convert AgentDojo Functions to OpenAI ``tools`` format.
+
+    Returns ``[{"type": "function", "function": {"name", "description",
+    "parameters"}}]`` — the structure expected by
+    :class:`causal_armor.providers.openai.OpenAIActionProvider`.
+    """
+    tools: list[dict[str, Any]] = []
+
+    for func in functions:
+        schema = resolve_refs(func.parameters)
+        remove_additional_properties_recursively(schema)
+
+        properties = schema.get("properties", {})
+        required = schema.get("required", [])
+
+        parameters: dict[str, Any] = {
+            "type": "object",
+            "properties": properties,
+        }
+        if required:
+            parameters["required"] = required
+
+        tools.append({
+            "type": "function",
+            "function": {
+                "name": func.name,
+                "description": func.description or func.name,
+                "parameters": parameters,
+            },
+        })
+
+    return tools
+
+
+def functions_to_anthropic_tools(
+    functions: list[Function],
+) -> list[dict[str, Any]]:
+    """Convert AgentDojo Functions to Anthropic ``tools`` format.
+
+    Returns ``[{"name", "description", "input_schema"}]`` — the structure
+    expected by
+    :class:`causal_armor.providers.anthropic.AnthropicActionProvider`.
+    """
+    tools: list[dict[str, Any]] = []
+
+    for func in functions:
+        schema = resolve_refs(func.parameters)
+        remove_additional_properties_recursively(schema)
+
+        properties = schema.get("properties", {})
+        required = schema.get("required", [])
+
+        input_schema: dict[str, Any] = {
+            "type": "object",
+            "properties": properties,
+        }
+        if required:
+            input_schema["required"] = required
+
+        tools.append({
+            "name": func.name,
+            "description": func.description or func.name,
+            "input_schema": input_schema,
+        })
+
+    return tools
