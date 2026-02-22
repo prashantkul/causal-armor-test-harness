@@ -7,3 +7,5 @@ build/
 .env
 uv.lock
 results/*.json
+lab-notes-*.md
+.claude/
