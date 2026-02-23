@@ -47,26 +47,160 @@ else
 fi
 
 echo ""
-echo "=== Completed Results ==="
-results_dir="$(dirname "$0")/../results"
-for f in "$results_dir"/*.json; do
-    [ -f "$f" ] || continue
-    fname=$(basename "$f")
-    # Skip verification and old benchmark files
-    [[ "$fname" == benchmark_* ]] && continue
-    [[ "$fname" == *verify* ]] && continue
-    python3 -c "
-import json, sys
-with open('$f') as fh:
-    data = json.load(fh)
-d = data[0] if isinstance(data, list) else data
-scenarios = d.get('scenarios', [])
-n = len(scenarios)
-if n == 0:
-    sys.exit(0)
-util = sum(1 for s in scenarios if s.get('utility')) / n * 100
-asr = sum(1 for s in scenarios if not s.get('security')) / n * 100
-errs = sum(1 for s in scenarios if s.get('error'))
-print(f'  {\"$fname\":<50s}  n={n:>4d}  util={util:5.1f}%  asr={asr:5.1f}%  err={errs}')
-" 2>/dev/null || true
-done
+results_dir="$(cd "$(dirname "$0")/.." && pwd)/results"
+python3 - "$results_dir" << 'PYEOF'
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+from rich.console import Console
+from rich.table import Table
+from rich.text import Text
+
+results = Path(sys.argv[1])
+suites = ["banking", "workspace", "travel", "slack"]
+providers = ["gemini", "openai", "anthropic"]
+modes = ["baseline", "guarded"]
+reps = 3
+
+console = Console()
+
+# ── Run Matrix ──
+
+# Detect running benchmark processes
+running = set()
+try:
+    out = subprocess.check_output(
+        ["ps", "aux"], text=True, stderr=subprocess.DEVNULL,
+    )
+    for line in out.splitlines():
+        if "run_benchmark" not in line or "grep" in line or "check_runs" in line:
+            continue
+        parts = line.split()
+        provider = suite = mode = None
+        for i, tok in enumerate(parts):
+            if tok in ("--provider", "-p") and i + 1 < len(parts):
+                provider = parts[i + 1]
+            if tok in ("--suite", "-s") and i + 1 < len(parts):
+                suite = parts[i + 1]
+            if tok == "--guard":
+                mode = "guarded"
+            if tok == "--no-guard":
+                mode = "baseline"
+        if provider and suite and mode:
+            running.add((suite, mode, provider))
+except Exception:
+    pass
+
+# Check which result files exist
+done = {}
+for suite in suites:
+    for provider in providers:
+        for mode in modes:
+            n = sum(
+                1 for run in range(1, reps + 1)
+                if (results / f"{suite}_{provider}_{mode}_run{run}.json").exists()
+            )
+            done[(suite, mode, provider)] = n
+
+table = Table(title="Run Matrix", title_style="bold")
+table.add_column("Suite", style="cyan")
+table.add_column("Mode", style="cyan")
+for p in providers:
+    table.add_column(p.capitalize(), justify="center")
+
+totals = {p: 0 for p in providers}
+for suite in suites:
+    for mode in modes:
+        cells = []
+        for provider in providers:
+            n = done[(suite, mode, provider)]
+            totals[provider] += n
+            is_running = (suite, mode, provider) in running
+            if n == reps:
+                cell = Text(f"{n}/{reps}", style="bold green")
+            elif n > 0 and is_running:
+                cell = Text(f"{n}/{reps}", style="bold blue")
+            elif is_running:
+                cell = Text(f"{n}/{reps}", style="blue")
+            elif n > 0:
+                cell = Text(f"{n}/{reps}", style="yellow")
+            else:
+                cell = Text(f"{n}/{reps}", style="dim")
+            cells.append(cell)
+        table.add_row(suite, mode, *cells)
+
+# Totals row
+table.add_section()
+total_cells = []
+for p in providers:
+    t = totals[p]
+    style = "bold green" if t == len(suites) * len(modes) * reps else "yellow"
+    total_cells.append(Text(f"{t}/{len(suites) * len(modes) * reps}", style=style))
+table.add_row(
+    Text("Total", style="bold"), "", *total_cells,
+)
+
+console.print()
+console.print(table)
+total_done = sum(totals.values())
+total_all = len(suites) * len(providers) * len(modes) * reps
+if total_done == total_all:
+    console.print(f"\n  [bold green]{total_done}/{total_all} completed[/bold green]")
+else:
+    console.print(
+        f"\n  [green]{total_done}[/green]/{total_all} completed, "
+        f"[yellow]{total_all - total_done}[/yellow] remaining"
+    )
+console.print(
+    "  Legend: [bold green]done[/bold green]  "
+    "[blue]running[/blue]  "
+    "[yellow]partial[/yellow]  "
+    "[dim]pending[/dim]"
+)
+
+# ── Completed Results ──
+
+result_files = sorted(results.glob("*.json"))
+rows = []
+for f in result_files:
+    if f.name.startswith("benchmark_") or "verify" in f.name:
+        continue
+    if f.is_symlink():
+        continue
+    try:
+        with open(f) as fh:
+            data = json.load(fh)
+        d = data[0] if isinstance(data, list) else data
+        scenarios = d.get("scenarios", [])
+        n = len(scenarios)
+        if n == 0:
+            continue
+        util = sum(1 for s in scenarios if s.get("utility")) / n * 100
+        asr = sum(1 for s in scenarios if not s.get("security")) / n * 100
+        errs = sum(1 for s in scenarios if s.get("error"))
+        rows.append((f.name, n, util, asr, errs))
+    except Exception:
+        continue
+
+if rows:
+    detail = Table(title="Completed Results", title_style="bold")
+    detail.add_column("File", style="cyan", no_wrap=True)
+    detail.add_column("N", justify="right")
+    detail.add_column("Utility", justify="right")
+    detail.add_column("ASR", justify="right")
+    detail.add_column("Errors", justify="right")
+    for fname, n, util, asr, errs in rows:
+        asr_style = "green" if asr < 5 else "yellow" if asr < 20 else "red"
+        err_style = "green" if errs == 0 else "yellow" if errs < 10 else "red"
+        detail.add_row(
+            fname,
+            str(n),
+            f"{util:.1f}%",
+            Text(f"{asr:.1f}%", style=asr_style),
+            Text(str(errs), style=err_style),
+        )
+    console.print()
+    console.print(detail)
+PYEOF
