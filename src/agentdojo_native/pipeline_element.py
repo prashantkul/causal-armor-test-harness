@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from collections.abc import Sequence
 from typing import Any
@@ -63,18 +64,62 @@ class CausalArmorPipelineElement(BasePipelineElement):
         guard_enabled: bool = True,
         config: CausalArmorConfig | None = None,
         provider: str = "gemini",
+        use_openrouter: bool = False,
     ) -> None:
         self._tool_declarations = tool_declarations
         self._untrusted_tool_names = untrusted_tool_names
         self._guard_enabled = guard_enabled
         self._config = config
         self._provider = provider
+        self._use_openrouter = use_openrouter
         self.metrics: list[GuardMetrics] = []
 
     def _build_middleware(self) -> CausalArmorMiddleware:
         cfg = self._config or CausalArmorConfig.from_env()
 
-        if self._provider == "openai":
+        if self._use_openrouter:
+            # Route sanitizer/action through OpenRouter (OpenAI-compatible)
+            import openai as openai_mod
+
+            from causal_armor.providers.openai import (
+                OpenAIActionProvider,
+                OpenAISanitizerProvider,
+            )
+
+            or_client = openai_mod.AsyncOpenAI(
+                api_key=os.environ.get("OPENROUTER_API_KEY", ""),
+                base_url="https://openrouter.ai/api/v1",
+            )
+            # Map provider model names to OpenRouter model IDs
+            or_models = {
+                "gemini": "google/gemini-2.5-flash",
+                "openai": "openai/gpt-4o",
+                "anthropic": "anthropic/claude-sonnet-4-20250514",
+            }
+            or_sanitizer_models = {
+                "gemini": "google/gemini-2.5-flash",
+                "openai": "openai/gpt-4o-mini",
+                "anthropic": "anthropic/claude-haiku-4-5-20251001",
+            }
+            action_model = or_models.get(self._provider, "google/gemini-2.5-flash")
+            sanitizer_model = or_sanitizer_models.get(
+                self._provider, "google/gemini-2.5-flash"
+            )
+            logger.info(
+                "[GUARD] Using OpenRouter for action=%s, sanitizer=%s",
+                action_model, sanitizer_model,
+            )
+            # OpenRouter uses OpenAI-compatible tool format
+            action_provider = OpenAIActionProvider(
+                model=action_model,
+                tools=self._tool_declarations,
+                client=or_client,
+            )
+            sanitizer_provider = OpenAISanitizerProvider(
+                model=sanitizer_model,
+                client=or_client,
+            )
+        elif self._provider == "openai":
             from causal_armor.providers.openai import (
                 OpenAIActionProvider,
                 OpenAISanitizerProvider,

@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -63,6 +64,12 @@ DEFAULT_MODELS: dict[str, str] = {
     "openai": "gpt-4.1-2025-04-14",
     "anthropic": "claude-sonnet-4-20250514",
 }
+
+# OpenRouter model name mapping (OpenAI-compatible API)
+OPENROUTER_MODELS: dict[str, str] = {
+    "gemini-2.5-flash": "google/gemini-2.5-flash",
+}
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 
 # ---------------------------------------------------------------------------
@@ -284,6 +291,7 @@ def run_scenario(
     guard_enabled: bool = True,
     agent_model: str = "gemini-2.5-flash",
     provider: str = "gemini",
+    use_openrouter: bool = False,
 ) -> ScenarioResult:
     """Run a single AgentDojo scenario through a CausalArmor-guarded pipeline."""
     attack_name = attack.name if attack else None
@@ -312,14 +320,28 @@ def run_scenario(
         runtime = FunctionsRuntime(suite.tools)
 
         # 4. Build provider-specific declarations, client, and LLM
-        if provider == "openai":
-            import openai
+        if use_openrouter or provider == "openai":
+            import openai as openai_mod
 
             from agentdojo.agent_pipeline import OpenAILLM
 
-            client = openai.OpenAI()
-            declarations = functions_to_openai_tools(suite.tools)
-            llm = OpenAILLM(client=client, model=agent_model)
+            if use_openrouter:
+                or_key = os.environ.get("OPENROUTER_API_KEY", "")
+                or_model = OPENROUTER_MODELS.get(agent_model, agent_model)
+                client = openai_mod.OpenAI(
+                    base_url=OPENROUTER_BASE_URL,
+                    api_key=or_key,
+                )
+                logger.info(
+                    "Using OpenRouter: model=%s (mapped from %s)",
+                    or_model, agent_model,
+                )
+                declarations = functions_to_openai_tools(suite.tools)
+                llm = OpenAILLM(client=client, model=or_model)
+            else:
+                client = openai_mod.OpenAI()
+                declarations = functions_to_openai_tools(suite.tools)
+                llm = OpenAILLM(client=client, model=agent_model)
         elif provider == "anthropic":
             import anthropic
 
@@ -341,6 +363,7 @@ def run_scenario(
             untrusted_tool_names=untrusted_tools,
             guard_enabled=guard_enabled,
             provider=provider,
+            use_openrouter=use_openrouter,
         )
 
         # 5. Build AgentPipeline
@@ -427,6 +450,7 @@ def run_scenario_with_retry(
     guard_enabled: bool = True,
     agent_model: str = "gemini-2.5-flash",
     provider: str = "gemini",
+    use_openrouter: bool = False,
 ) -> ScenarioResult:
     """Run a scenario with retry on transient API errors (429, 503)."""
     for attempt in range(_MAX_RETRIES + 1):
@@ -434,6 +458,7 @@ def run_scenario_with_retry(
             suite, user_task, injection_task, untrusted_tools,
             attack=attack, guard_enabled=guard_enabled,
             agent_model=agent_model, provider=provider,
+            use_openrouter=use_openrouter,
         )
         if result.error is None:
             return result
@@ -471,6 +496,7 @@ def run_suite(
     user_task_filter: str | None = None,
     injection_task_filter: str | None = None,
     provider: str = "gemini",
+    use_openrouter: bool = False,
 ) -> SuiteRunResult:
     suite = get_suite(benchmark_version, suite_name)
     untrusted_tools = classify_untrusted_tools(suite)
@@ -517,6 +543,7 @@ def run_suite(
                 guard_enabled=guard_enabled,
                 agent_model=agent_model,
                 provider=provider,
+                use_openrouter=use_openrouter,
             )
             run_result.scenarios.append(scenario_result)
 
@@ -546,6 +573,7 @@ def run_full_benchmark(
     agent_model: str = "gemini-2.5-flash",
     suite_filter: str | None = None,
     provider: str = "gemini",
+    use_openrouter: bool = False,
 ) -> list[SuiteRunResult]:
     suites = [suite_filter] if suite_filter else ALL_SUITES
     results: list[SuiteRunResult] = []
@@ -559,6 +587,7 @@ def run_full_benchmark(
             guard_enabled=guard_enabled,
             agent_model=agent_model,
             provider=provider,
+            use_openrouter=use_openrouter,
         )
         results.append(suite_result)
 
@@ -754,6 +783,11 @@ def main() -> None:
         help="JSON output path.",
     )
     parser.add_argument(
+        "--openrouter",
+        action="store_true",
+        help="Route provider calls through OpenRouter (OpenAI-compatible API).",
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Enable debug logging.",
@@ -791,9 +825,12 @@ def main() -> None:
         guard_label = "guarded" if guard_enabled else "baseline"
         output_path = RESULTS_DIR / f"benchmark_{guard_label}_{timestamp}.json"
 
+    use_openrouter = args.openrouter
+    router_label = " via OpenRouter" if use_openrouter else ""
+
     console.print(
         f"\n[bold]CausalArmor Benchmark (native)[/bold]  "
-        f"provider={provider}  "
+        f"provider={provider}{router_label}  "
         f"guard={'ON' if guard_enabled else 'OFF'}  "
         f"agent={agent_model}"
     )
@@ -808,6 +845,7 @@ def main() -> None:
             user_task_filter=args.user_task,
             injection_task_filter=args.injection_task,
             provider=provider,
+            use_openrouter=use_openrouter,
         )
         report([suite_result], output_path=output_path)
     else:
@@ -817,6 +855,7 @@ def main() -> None:
             guard_enabled=guard_enabled,
             agent_model=agent_model,
             provider=provider,
+            use_openrouter=use_openrouter,
         )
         report(results, output_path=output_path)
 
